@@ -2,4 +2,3 @@ venv/
 *.sqlite3
 .idea
 *.pyc
-blog/__pycache__/

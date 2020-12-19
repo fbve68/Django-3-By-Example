@@ -1,13 +1,13 @@
 from django.db.models import Count
 from django.shortcuts import render, get_object_or_404
-from django.views.generic import ListView
-
-from .models import Post, Comment
-from django.core.paginator import Paginator, EmptyPage, PageNotAnInteger
-
-from .forms import EmailPostForm, CommentForm
+from django.core.paginator import Paginator, EmptyPage, \
+    PageNotAnInteger
 from django.core.mail import send_mail
-
+from django.views.generic import ListView
+from django.contrib.postgres.search import SearchVector, SearchQuery, SearchRank
+from django.contrib.postgres.search import TrigramSimilarity
+from .models import Post
+from .forms import EmailPostForm, CommentForm, SearchForm
 from taggit.models import Tag
 
 
@@ -29,9 +29,7 @@ def post_list(request, tag_slug=None):
     except EmptyPage:
         # If page is out of range deliver last page of results
         posts = paginator.page(paginator.num_pages)
-    return render(request, 'blog/post/list.html', {'page': page,
-                                                   'posts': posts,
-                                                   'tag': tag})
+    return render(request, 'blog/post/list.html', {'page': page, 'posts': posts, 'tag': tag})
 
 
 def post_detail(request, year, month, day, post):
@@ -59,12 +57,11 @@ def post_detail(request, year, month, day, post):
     else:
         comment_form = CommentForm()
 
-        # List of similar posts
+    # List of similar posts
     post_tags_ids = post.tags.values_list('id', flat=True)
     similar_posts = Post.published.filter(tags__in=post_tags_ids) \
         .exclude(id=post.id)
-    similar_posts = similar_posts.annotate(same_tags=Count('tags')) \
-                        .order_by('-same_tags', '-publish')[:4]
+    similar_posts = similar_posts.annotate(same_tags=Count('tags')).order_by('-same_tags', '-publish')[:4]
 
     return render(request,
                   'blog/post/detail.html',
@@ -97,7 +94,7 @@ def post_share(request, post_id):
             subject = f"{cd['name']} recommends you read {post.title}"
             message = f"Read {post.title} at {post_url}\n\n" \
                       f"{cd['name']}\'s comments: {cd['comments']}"
-            send_mail(subject, message, 'fbve68@gmail.com', [cd['to']])
+            send_mail(subject, message, 'admin@myblog.com', [cd['to']])
             sent = True
 
     else:
@@ -105,3 +102,26 @@ def post_share(request, post_id):
     return render(request, 'blog/post/share.html', {'post': post,
                                                     'form': form,
                                                     'sent': sent})
+
+
+#  para rsolver problema de similarity no bando de dados
+from django.db import connection
+
+with connection.cursor() as cursor:
+    cursor.execute('CREATE EXTENSION IF NOT EXISTS pg_trgm')
+
+
+def post_search(request):
+    form = SearchForm()
+    query = None
+    results = []
+    if 'query' in request.GET:
+        form = SearchForm(request.GET)
+    if form.is_valid():
+        query = form.cleaned_data['query']
+        search_vector = SearchVector('title', weight='A') + SearchVector('body', weight='B')
+        search_query = SearchQuery(query)
+        results = Post.published.annotate(
+            similarity=TrigramSimilarity('title', query),
+        ).filter(similarity__gt=0.1).order_by('-similarity')
+    return render(request, 'blog/post/search.html', {'form': form, 'query': query, 'results': results})
